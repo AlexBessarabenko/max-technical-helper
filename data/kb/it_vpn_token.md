@@ -1,6 +1,6 @@
 ---
 source: IT
-title: VPN-токен SphereToken: активация и замена
+title: "VPN-токен SphereToken: активация и замена"
 ---
 
 ## Назначение

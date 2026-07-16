@@ -1,6 +1,6 @@
 ---
 source: IT
-title: Корпоративный Wi-Fi: сети CORP и GUEST
+title: "Корпоративный Wi-Fi: сети CORP и GUEST"
 ---
 
 ## Доступные сети
