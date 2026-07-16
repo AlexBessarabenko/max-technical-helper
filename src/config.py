@@ -9,7 +9,7 @@ class Settings(BaseSettings):
 
     yandex_api_key: str = ""
     yandex_folder_id: str = ""
-    yandex_llm_model: str = "yandexgpt"
+    yandex_llm_model: str = "deepseek-v4-flash"
     yandex_base_url: str = "https://ai.api.cloud.yandex.net/v1"
 
     max_bot_token: str = ""
