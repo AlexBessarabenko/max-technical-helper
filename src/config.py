@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     finetune_dataset_path: Path = Path("data/finetune/dataset.jsonl")
     goldens_path: Path = Path("data/eval/goldens.json")
     chroma_dir: Path = Path("chroma_db")
-    chroma_collection: str = "kb"
+    chroma_collection: str = "knowledge_base"
     retrieval_top_k: int = 4
     retrieval_min_score: float = 0.25
 
