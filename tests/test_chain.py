@@ -27,6 +27,7 @@ def test_answer_no_context_returns_refusal_without_llm():
     p = _pipeline({"documents": [[]], "metadatas": [[]], "distances": [[]]})
     r = p.answer("что-то совсем не по теме")
     assert r.status == "no_answer"
+    assert r.contexts == []
     assert "нет информации" in r.answer.lower()
     p._llm.invoke.assert_not_called()
 
@@ -40,3 +41,4 @@ def test_answer_success_includes_sources():
     r = p.answer("как настроить vpn")
     assert r.status == "success"
     assert "Настройка VPN" in r.sources
+    assert "VPN настраивается через OpenVPN..." in r.contexts

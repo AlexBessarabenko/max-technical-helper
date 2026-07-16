@@ -1,6 +1,6 @@
 """RAG-цепочка: retrieval из ChromaDB + генерация ответа через YandexGPT."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import chromadb
@@ -56,9 +56,10 @@ class YandexChatOpenAI(ChatOpenAI):
 
 @dataclass
 class RAGResult:
-    status: str  # "success" | "no_answer"
     answer: str
-    sources: List[str] = field(default_factory=list)
+    sources: List[str]
+    contexts: List[str]
+    status: str  # "success" | "no_answer"
 
 
 class RAGPipeline:
@@ -127,7 +128,7 @@ class RAGPipeline:
         """
         hits = self.retrieve(question)
         if not hits:
-            return RAGResult(status="no_answer", answer=NO_ANSWER_TEXT, sources=[])
+            return RAGResult(answer=NO_ANSWER_TEXT, sources=[], contexts=[], status="no_answer")
 
         context = "\n\n".join(
             f"{i}. [Источник: {metadata.get('title', '')}]\n{text}"
@@ -145,4 +146,9 @@ class RAGPipeline:
         sources = list(dict.fromkeys(
             metadata.get("title", "") for _, metadata, _ in hits if metadata.get("title")
         ))
-        return RAGResult(status="success", answer=response.content, sources=sources)
+        return RAGResult(
+            answer=response.content,
+            sources=sources,
+            contexts=[text for text, _, _ in hits],
+            status="success",
+        )
