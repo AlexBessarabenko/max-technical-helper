@@ -1,14 +1,18 @@
 """RAG-цепочка: retrieval из ChromaDB + генерация ответа через YandexGPT."""
 
+import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import chromadb
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
+from langfuse import propagate_attributes
 
 from src.config import Settings
 from src.rag.embeddings import YandexEmbeddings
+
+log = logging.getLogger(__name__)
 
 NO_ANSWER_TEXT = (
     "К сожалению, в базе знаний нет информации по этому вопросу. "
@@ -68,7 +72,8 @@ class RAGPipeline:
 
     def __init__(self, settings: Settings, lf=None):
         self.settings = settings
-        self._lf = lf  # Langfuse-клиент, понадобится в задаче трейсинга
+        self._lf = lf  # Langfuse-клиент для трейсинга (None — трейсинг выключен)
+        self._model_name = f"gpt://{settings.yandex_folder_id}/{settings.yandex_llm_model}"
         self._embeddings = YandexEmbeddings(
             api_key=settings.yandex_api_key,
             folder_id=settings.yandex_folder_id,
@@ -79,7 +84,7 @@ class RAGPipeline:
             metadata={"hnsw:space": "cosine"},
         )
         self._llm = YandexChatOpenAI(
-            model=f"gpt://{settings.yandex_folder_id}/{settings.yandex_llm_model}",
+            model=self._model_name,
             api_key=settings.yandex_api_key,
             base_url=settings.yandex_base_url,
             temperature=0.1,
@@ -116,6 +121,40 @@ class RAGPipeline:
                 hits.append((text, metadata, score))
         return hits
 
+    def _no_answer_result(self) -> RAGResult:
+        return RAGResult(answer=NO_ANSWER_TEXT, sources=[], contexts=[], status="no_answer")
+
+    def _build_prompt(
+        self,
+        question: str,
+        hits: List[Tuple[str, dict, float]],
+        chat_history: Optional[List[Tuple[str, str]]] = None,
+    ) -> List:
+        """Собирает сообщения запроса: system с контекстом, история, вопрос."""
+        context = "\n\n".join(
+            f"{i}. [Источник: {metadata.get('title', '')}]\n{text}"
+            for i, (text, metadata, _) in enumerate(hits, 1)
+        )
+        messages = [SystemMessage(content=SYSTEM_PROMPT.format(context=context))]
+        for role, text in (chat_history or [])[-_HISTORY_PAIRS * 2:]:
+            if role == "user":
+                messages.append(HumanMessage(content=text))
+            else:
+                messages.append(AIMessage(content=text))
+        messages.append(HumanMessage(content=question))
+        return messages
+
+    def _build_result(self, answer_text: str, hits: List[Tuple[str, dict, float]]) -> RAGResult:
+        sources = list(dict.fromkeys(
+            metadata.get("title", "") for _, metadata, _ in hits if metadata.get("title")
+        ))
+        return RAGResult(
+            answer=answer_text,
+            sources=sources,
+            contexts=[text for text, _, _ in hits],
+            status="success",
+        )
+
     def answer(
         self,
         question: str,
@@ -128,27 +167,68 @@ class RAGPipeline:
         """
         hits = self.retrieve(question)
         if not hits:
-            return RAGResult(answer=NO_ANSWER_TEXT, sources=[], contexts=[], status="no_answer")
+            return self._no_answer_result()
 
-        context = "\n\n".join(
-            f"{i}. [Источник: {metadata.get('title', '')}]\n{text}"
-            for i, (text, metadata, _) in enumerate(hits, 1)
-        )
-        messages = [SystemMessage(content=SYSTEM_PROMPT.format(context=context))]
-        for role, text in (chat_history or [])[-_HISTORY_PAIRS * 2:]:
-            if role == "user":
-                messages.append(HumanMessage(content=text))
-            else:
-                messages.append(AIMessage(content=text))
-        messages.append(HumanMessage(content=question))
-
+        messages = self._build_prompt(question, hits, chat_history)
         response = self._llm.invoke(messages)
-        sources = list(dict.fromkeys(
-            metadata.get("title", "") for _, metadata, _ in hits if metadata.get("title")
-        ))
-        return RAGResult(
-            answer=response.content,
-            sources=sources,
-            contexts=[text for text, _, _ in hits],
-            status="success",
-        )
+        return self._build_result(response.content, hits)
+
+    def answer_traced(
+        self,
+        question: str,
+        chat_history: Optional[List[Tuple[str, str]]] = None,
+        user_id: str = "unknown",
+        session_id: str = "unknown",
+    ) -> RAGResult:
+        """
+        Обёртка над answer() с Langfuse-трейсом: span'ы preprocessing →
+        generation → postprocessing, событие pipeline_completed, user_id и
+        session_id на трейсе. Вызов LLM — строго внутри generation-observation,
+        чтобы длительность generation отражала чистое время LLM.
+        При lf=None или любой ошибке Langfuse — обычный answer().
+        """
+        lf = getattr(self, "_lf", None)
+        if lf is None:
+            return self.answer(question, chat_history)
+        try:
+            with propagate_attributes(user_id=user_id, session_id=session_id):
+                with lf.start_as_current_observation(
+                    name="max_request", as_type="span", input={"question": question}
+                ) as root:
+                    with lf.start_as_current_observation(name="preprocessing", as_type="span") as span:
+                        hits = self.retrieve(question)
+                        span.update(output={"num_contexts": len(hits)})
+                    if not hits:
+                        result = self._no_answer_result()
+                    else:
+                        prompt = self._build_prompt(question, hits, chat_history)
+                        # generation-observation открывается НЕПОСРЕДСТВЕННО вокруг вызова LLM.
+                        with lf.start_as_current_observation(
+                            name="llm_generation",
+                            as_type="generation",
+                            model=getattr(self, "_model_name", None),
+                            input=prompt,
+                        ) as gen:
+                            resp = self._llm.invoke(prompt)  # сам вызов — внутри observation
+                            token_usage = (resp.response_metadata or {}).get("token_usage") or {}
+                            gen.update(
+                                output=resp.content,
+                                usage_details={
+                                    k: v
+                                    for k, v in {
+                                        "input": token_usage.get("prompt_tokens"),
+                                        "output": token_usage.get("completion_tokens"),
+                                    }.items()
+                                    if v is not None
+                                },
+                            )
+                        with lf.start_as_current_observation(name="postprocessing", as_type="span") as span:
+                            result = self._build_result(resp.content, hits)
+                            span.update(output={"status": result.status})
+                    lf.create_event(name="pipeline_completed", metadata={"status": result.status})
+                    root.update(output={"answer": result.answer[:500], "status": result.status})
+                lf.flush()
+            return result
+        except Exception:
+            log.warning("Ошибка Langfuse-трейсинга, отвечаем без трейса", exc_info=True)
+            return self.answer(question, chat_history)
