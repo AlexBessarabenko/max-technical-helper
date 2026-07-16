@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Unit tests
+        run: pytest tests -v --ignore=tests/test_ragas.py --html=unit-report.html --self-contained-html
+
+      - name: Build ChromaDB index
+        env:
+          YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
+          YANDEX_FOLDER_ID: ${{ secrets.YANDEX_FOLDER_ID }}
+        run: python -c "from src.config import get_settings; from src.rag.indexing import build_index; build_index(get_settings())"
+
+      - name: Ragas evaluation
+        env:
+          YANDEX_API_KEY: ${{ secrets.YANDEX_API_KEY }}
+          YANDEX_FOLDER_ID: ${{ secrets.YANDEX_FOLDER_ID }}
+        run: |
+          rm -f tests/ragas_results.json
+          pytest tests/test_ragas.py -v --html=ragas-report.html --self-contained-html
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: |
+            *.html
+            tests/ragas_results.json
+
+      - name: Quality Gate Check
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+
+          path = "tests/ragas_results.json"
+          if not os.path.exists(path):
+              print(f"QUALITY GATE FAILED: {path} не найден — Ragas-оценка не отработала")
+              sys.exit(1)
+
+          with open(path, encoding="utf-8") as f:
+              r = json.load(f)
+
+          gates = {"faithfulness": 0.7, "answer_relevancy": 0.7, "context_recall": 0.6}
+          for k in gates:
+              print(f"{k}: {r.get(k)}")
+          failed = [
+              f"{k}={r.get(k)} < {t}"
+              for k, t in gates.items()
+              if r.get(k) is not None and r[k] < t
+          ]
+          if failed:
+              print("QUALITY GATE FAILED: " + "; ".join(failed))
+              sys.exit(1)
+          print("QUALITY GATE PASSED")
+          EOF
