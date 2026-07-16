@@ -1,0 +1,8 @@
+.env
+chroma_db/
+models/
+__pycache__/
+*.pyc
+.venv/
+docs/superpowers/
+presentation/
