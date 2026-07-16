@@ -26,3 +26,39 @@ def test_lookup_manager():
 
 def test_lookup_no_match_returns_none():
     assert _dir().lookup_answer("сколько дней отпуска?") is None
+
+
+def test_lookup_tie_returns_clarification():
+    d = PeopleDirectory.__new__(PeopleDirectory, employees=[
+        {"id": "r1", "full_name": "Алексей Родионов", "department": "ИТ",
+         "division": "ИТ", "position": "Разработчик", "phone": "2001",
+         "email": "a.rodionov@technosphere.example", "manager_id": None, "samaccountname": "a.rodionov"},
+        {"id": "r2", "full_name": "Игорь Родионов", "department": "HR",
+         "division": "HR", "position": "Рекрутер", "phone": "2002",
+         "email": "i.rodionov@technosphere.example", "manager_id": None, "samaccountname": "i.rodionov"},
+    ])
+    ans = d.lookup_answer("найди Родионова")
+    # Точная ничья по score → уточнение с обоими однофамильцами, а не чья-то карточка.
+    assert ans is not None and "Уточните" in ans
+    assert "Алексей Родионов" in ans and "Игорь Родионов" in ans
+
+
+def test_lookup_single_weak_match_returns_none():
+    d = PeopleDirectory.__new__(PeopleDirectory, employees=[
+        {"id": "w1", "full_name": "Семен Тарасов", "department": "HR",
+         "division": "HR", "position": "Специалист по кадрам", "phone": "2003",
+         "email": "semen.tarasov@technosphere.example", "manager_id": None, "samaccountname": "s.tarasov"},
+    ])
+    # «смены» ~ «семен» = 80: одиночное слабое совпадение одним словом — шум, не сотрудник.
+    assert d.lookup_answer("после смены пароля отваливается wi-fi") is None
+
+
+def test_lookup_manager_of_ceo_has_no_manager_card():
+    d = PeopleDirectory.__new__(PeopleDirectory, employees=[
+        {"id": "c1", "full_name": "Вениамин Козлов", "department": "ТехноСфера",
+         "division": "Дирекция", "position": "Генеральный директор", "phone": "2000",
+         "email": "veniamin.kozlov@technosphere.example", "manager_id": None, "samaccountname": "v.kozlov"},
+    ])
+    ans = d.lookup_answer("кто руководитель Козлова?")
+    assert ans is not None and "Вениамин Козлов" in ans
+    assert "Руководитель:" not in ans  # manager_id=None — карточка руководителя не добавляется
