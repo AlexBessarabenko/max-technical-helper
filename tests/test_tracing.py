@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.config import Settings
 from src.observability.tracing import init_langfuse
 from src.rag.chain import RAGPipeline
@@ -69,10 +71,25 @@ def test_answer_traced_no_answer_without_llm():
     lf.flush.assert_called_once()
 
 
-def test_answer_traced_lf_error_falls_back_to_answer():
+def test_answer_traced_lf_error_still_returns_answer():
+    # Langfuse бросает из всех методов → ответ всё равно success,
+    # LLM вызван ровно один раз (никакого дублирующего прогона).
     lf = MagicMock()
     lf.start_as_current_observation.side_effect = RuntimeError("langfuse down")
+    lf.create_event.side_effect = RuntimeError("langfuse down")
+    lf.flush.side_effect = RuntimeError("langfuse down")
     p = _pipeline(_HITS, lf=lf)
     r = p.answer_traced("как настроить vpn", user_id="u1", session_id="s1")
     assert r.status == "success"
     assert "Настройка VPN" in r.sources
+    p._llm.invoke.assert_called_once()
+
+
+def test_answer_traced_llm_error_propagates():
+    # Ошибка LLM не подавляется и не маскируется под ошибку трейсинга.
+    lf = MagicMock()
+    p = _pipeline(_HITS, lf=lf)
+    p._llm.invoke.side_effect = RuntimeError("LLM down")
+    with pytest.raises(RuntimeError, match="LLM down"):
+        p.answer_traced("как настроить vpn", user_id="u1", session_id="s1")
+    lf.flush.assert_not_called()

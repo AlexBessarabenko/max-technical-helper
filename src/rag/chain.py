@@ -10,6 +10,7 @@ from langchain_openai import ChatOpenAI
 from langfuse import propagate_attributes
 
 from src.config import Settings
+from src.observability.tracing import langfuse_scope, suppress_langfuse_errors
 from src.rag.embeddings import YandexEmbeddings
 
 log = logging.getLogger(__name__)
@@ -185,50 +186,73 @@ class RAGPipeline:
         generation → postprocessing, событие pipeline_completed, user_id и
         session_id на трейсе. Вызов LLM — строго внутри generation-observation,
         чтобы длительность generation отражала чистое время LLM.
-        При lf=None или любой ошибке Langfuse — обычный answer().
+        Ошибки Langfuse SDK (открытие/апдейт observation, event, flush)
+        подавляются — ответ возвращается в любом случае. Ошибки retrieve/LLM
+        НЕ перехватываются и пробрасываются вызывающему, как в answer().
+        При lf=None — обычный answer().
         """
         lf = getattr(self, "_lf", None)
         if lf is None:
             return self.answer(question, chat_history)
-        try:
-            with propagate_attributes(user_id=user_id, session_id=session_id):
-                with lf.start_as_current_observation(
+        with langfuse_scope(
+            lambda: propagate_attributes(user_id=user_id, session_id=session_id),
+            "propagate_attributes",
+        ):
+            with langfuse_scope(
+                lambda: lf.start_as_current_observation(
                     name="max_request", as_type="span", input={"question": question}
-                ) as root:
-                    with lf.start_as_current_observation(name="preprocessing", as_type="span") as span:
-                        hits = self.retrieve(question)
-                        span.update(output={"num_contexts": len(hits)})
-                    if not hits:
-                        result = self._no_answer_result()
-                    else:
-                        prompt = self._build_prompt(question, hits, chat_history)
-                        # generation-observation открывается НЕПОСРЕДСТВЕННО вокруг вызова LLM.
-                        with lf.start_as_current_observation(
+                ),
+                "max_request",
+            ) as root:
+                with langfuse_scope(
+                    lambda: lf.start_as_current_observation(name="preprocessing", as_type="span"),
+                    "preprocessing",
+                ) as span:
+                    hits = self.retrieve(question)
+                    if span is not None:
+                        with suppress_langfuse_errors("preprocessing.update"):
+                            span.update(output={"num_contexts": len(hits)})
+                if not hits:
+                    result = self._no_answer_result()
+                else:
+                    prompt = self._build_prompt(question, hits, chat_history)
+                    # generation-observation открывается НЕПОСРЕДСТВЕННО вокруг вызова
+                    # LLM; сам вызов намеренно не защищён — его ошибки идут вызывающему.
+                    with langfuse_scope(
+                        lambda: lf.start_as_current_observation(
                             name="llm_generation",
                             as_type="generation",
                             model=getattr(self, "_model_name", None),
                             input=prompt,
-                        ) as gen:
-                            resp = self._llm.invoke(prompt)  # сам вызов — внутри observation
-                            token_usage = (resp.response_metadata or {}).get("token_usage") or {}
-                            gen.update(
-                                output=resp.content,
-                                usage_details={
-                                    k: v
-                                    for k, v in {
-                                        "input": token_usage.get("prompt_tokens"),
-                                        "output": token_usage.get("completion_tokens"),
-                                    }.items()
-                                    if v is not None
-                                },
-                            )
-                        with lf.start_as_current_observation(name="postprocessing", as_type="span") as span:
-                            result = self._build_result(resp.content, hits)
-                            span.update(output={"status": result.status})
-                    lf.create_event(name="pipeline_completed", metadata={"status": result.status})
-                    root.update(output={"answer": result.answer[:500], "status": result.status})
+                        ),
+                        "llm_generation",
+                    ) as gen:
+                        resp = self._llm.invoke(prompt)
+                        token_usage = (resp.response_metadata or {}).get("token_usage") or {}
+                        usage_details = {
+                            k: v
+                            for k, v in {
+                                "input": token_usage.get("prompt_tokens"),
+                                "output": token_usage.get("completion_tokens"),
+                            }.items()
+                            if v is not None
+                        }
+                        if gen is not None:
+                            with suppress_langfuse_errors("llm_generation.update"):
+                                gen.update(output=resp.content, usage_details=usage_details)
+                    with langfuse_scope(
+                        lambda: lf.start_as_current_observation(name="postprocessing", as_type="span"),
+                        "postprocessing",
+                    ) as span:
+                        result = self._build_result(resp.content, hits)
+                        if span is not None:
+                            with suppress_langfuse_errors("postprocessing.update"):
+                                span.update(output={"status": result.status})
+                if root is not None:
+                    with suppress_langfuse_errors("pipeline_completed event"):
+                        lf.create_event(name="pipeline_completed", metadata={"status": result.status})
+                    with suppress_langfuse_errors("max_request.update"):
+                        root.update(output={"answer": result.answer[:500], "status": result.status})
+            with suppress_langfuse_errors("flush"):
                 lf.flush()
-            return result
-        except Exception:
-            log.warning("Ошибка Langfuse-трейсинга, отвечаем без трейса", exc_info=True)
-            return self.answer(question, chat_history)
+        return result

@@ -1,6 +1,13 @@
-"""Инициализация Langfuse-клиента для трейсинга RAG-пайплайна."""
+"""Langfuse-трейсинг RAG-пайплайна: клиент + безопасные обёртки над SDK.
+
+Обёртки гарантируют, что сбой Langfuse (недоступный сервер, ошибка
+сериализации) никогда не роняет ответ пользователю, а ошибки бизнес-кода
+(retrieve, вызов LLM) пробрасываются вызывающему без изменений.
+"""
 
 import logging
+import sys
+from contextlib import contextmanager
 
 from langfuse import Langfuse
 
@@ -25,3 +32,45 @@ def init_langfuse(settings) -> "Langfuse | None":
     except Exception:
         log.warning("Langfuse недоступен, трейсинг отключён", exc_info=True)
         return None
+
+
+@contextmanager
+def langfuse_scope(factory, what: str):
+    """
+    Безопасно входит в контекстный менеджер Langfuse (observation,
+    propagate_attributes): `factory` создаёт CM, вход выполняется здесь.
+    Ошибки создания/входа/выхода CM подавляются — блок получает None и
+    выполняется без этой observation. Исключения ТЕЛА блока (retrieve,
+    вызов LLM) не подавляются: __exit__ получает их exc_info (span
+    помечается ошибкой), после чего они пробрасываются вызывающему.
+    """
+    cm = None
+    try:
+        cm = factory()
+        obs = cm.__enter__()
+    except Exception:
+        log.warning("Langfuse: %s — не открыто, работаем без трейса", what, exc_info=True)
+        cm = obs = None
+    try:
+        yield obs
+    except BaseException:
+        if cm is not None:
+            try:
+                cm.__exit__(*sys.exc_info())
+            except Exception:
+                log.warning("Langfuse: %s — ошибка при закрытии", what, exc_info=True)
+        raise
+    if cm is not None:
+        try:
+            cm.__exit__(None, None, None)
+        except Exception:
+            log.warning("Langfuse: %s — ошибка при закрытии", what, exc_info=True)
+
+
+@contextmanager
+def suppress_langfuse_errors(what: str):
+    """Подавляет ошибки одного вызова Langfuse SDK (update / event / flush)."""
+    try:
+        yield
+    except Exception:
+        log.warning("Langfuse: %s — ошибка, продолжаем без трейса", what, exc_info=True)
