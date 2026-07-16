@@ -175,7 +175,21 @@ services:
     volumes:
       - langfuse_postgres_data:/var/lib/postgresql/data
 
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      LANGFUSE_BASE_URL: http://langfuse-web:3000
+      CHROMA_DIR: /data/chroma_db
+    volumes:
+      - bot_data:/data
+    depends_on:
+      langfuse-web: { condition: service_started }
+
 volumes:
+  bot_data:
+    driver: local
   langfuse_postgres_data:
     driver: local
   langfuse_clickhouse_data:

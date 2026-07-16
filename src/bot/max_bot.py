@@ -8,14 +8,16 @@
 import asyncio
 import logging
 
+import chromadb
 from maxapi import Bot, Dispatcher, F
 from maxapi.filters.command import CommandStart
 from maxapi.types import BotStarted, MessageCreated
 
 from src.bot.assistant import Assistant
-from src.config import get_settings
+from src.config import Settings, get_settings
 from src.observability.tracing import init_langfuse
 from src.rag.chain import RAGPipeline
+from src.rag.indexing import build_index
 from src.rag.people import PeopleDirectory
 
 logging.basicConfig(level=logging.INFO)
@@ -48,8 +50,29 @@ def build_dispatcher(bot: Bot, assistant: Assistant) -> Dispatcher:
     return dp
 
 
+def ensure_index(settings: Settings) -> None:
+    """
+    Гарантирует непустой индекс ChromaDB перед стартом бота.
+    Если коллекция отсутствует или пуста (например, чистый docker-volume),
+    пересобирает индекс из базы знаний через build_index.
+    """
+    client = chromadb.PersistentClient(path=str(settings.chroma_dir))
+    collection = client.get_or_create_collection(
+        name=settings.chroma_collection,
+        metadata={"hnsw:space": "cosine"},
+    )
+    count = collection.count()
+    if count > 0:
+        log.info("Индекс ChromaDB на месте (%d чанков), сборка не требуется.", count)
+        return
+    log.info("Индекс ChromaDB пуст — собираю из %s…", settings.kb_dir)
+    n = build_index(settings)
+    log.info("Индекс собран: %d чанков.", n)
+
+
 async def main():
     settings = get_settings()
+    ensure_index(settings)
     lf = init_langfuse(settings)
     rag = RAGPipeline(settings, lf=lf)
     assistant = Assistant(settings, rag, PeopleDirectory(settings.ad_path), lf)

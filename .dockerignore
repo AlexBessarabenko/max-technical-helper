@@ -1,0 +1,11 @@
+.venv
+chroma_db
+.git
+docs
+models
+tests
+*.html
+.env
+.superpowers
+.pytest_cache
+__pycache__
