@@ -82,6 +82,11 @@ def run_evaluation(settings: Settings) -> Dict[str, Any]:
     Ragas (faithfulness, answer_relevancy, context_recall) с evaluator на
     YandexChatOpenAI/YandexEmbeddings. Усредняет с игнорированием None/NaN,
     пишет tests/ragas_results.json и возвращает dict с теми же ключами + details.
+
+    Строки с "ood": true (out-of-domain, эталон — отказ) прогоняются через
+    пайплайн и сохраняются в details, но из усреднения исключаются: ragas
+    структурно зануляет answer_relevancy для отказов (noncommittal → 0),
+    а качество OOD-отказов отдельно покрыто test_no_hallucinations.
     """
     goldens = [g for g in load_goldens(settings.goldens_path) if not g.get("skip_rag")]
     pipeline = RAGPipeline(settings)
@@ -94,6 +99,7 @@ def run_evaluation(settings: Settings) -> Dict[str, Any]:
 
     rows = []
     statuses = []
+    oods = []
     for golden in goldens:
         result = pipeline.answer(golden["question"])
         rows.append(
@@ -105,6 +111,7 @@ def run_evaluation(settings: Settings) -> Dict[str, Any]:
             }
         )
         statuses.append(result.status)
+        oods.append(bool(golden.get("ood")))
 
     results = evaluate(
         dataset=Dataset.from_list(rows),
@@ -113,13 +120,20 @@ def run_evaluation(settings: Settings) -> Dict[str, Any]:
         embeddings=embeddings,
     )
 
-    averaged = {key: _mean(list(results[key])) for key in METRIC_KEYS}
+    averaged = {
+        key: _mean([results[key][i] for i in range(len(rows)) if not oods[i]])
+        for key in METRIC_KEYS
+    }
     details = []
     for i, row in enumerate(rows):
         scores = {key: _score_or_none(results[key][i]) for key in METRIC_KEYS}
-        details.append({**row, "status": statuses[i], **scores})
+        details.append({**row, "status": statuses[i], "ood": oods[i], **scores})
 
-    results_dict: Dict[str, Any] = {**averaged, "details": details}
+    results_dict: Dict[str, Any] = {
+        **averaged,
+        "note": "OOD rows excluded from averaging, covered by test_no_hallucinations",
+        "details": details,
+    }
     with open(RESULTS_PATH, "w", encoding="utf-8") as f:
         json.dump(results_dict, f, ensure_ascii=False, indent=2)
     log.info("Ragas результаты записаны в %s", RESULTS_PATH)
