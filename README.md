@@ -189,6 +189,17 @@ set -a && . ./.env && set +a && docker compose -f - up -d --build < docker-compo
 В compose-файле задано фиксированное имя проекта `name: langfuse`, поэтому при
 запуске через stdin проект не превращается в `void`.
 
+Для сервиса `bot` рабочая копия проекта синхронизируется в snap-доступный
+каталог и compose запускается уже из неё (переменные подставляются из shell —
+сервис не использует `env_file`):
+
+```bash
+CTX=/var/snap/docker/common/bot-ctx
+cp Dockerfile requirements.txt .env docker-compose.yml "$CTX/"
+cp -r certs src data "$CTX/"
+cd "$CTX" && set -a && . ./.env && set +a && docker compose up -d --build bot
+```
+
 После старта: Langfuse UI — http://localhost:3000 (логин/пароль задаются
 переменными `LANGFUSE_INIT_USER_*` в `.env`), бот отвечает в Max.
 
@@ -225,6 +236,15 @@ WEBHOOK_PORT=8080                      # порт aiohttp-сервера
 `{WEBHOOK_URL}{WEBHOOK_PATH}` и поднимает aiohttp-сервер на `127.0.0.1:8080`;
 туннель проксирует на него публичный 443-й порт (сертификат GlobalSign проходит
 TLS-проверку MAX).
+
+Стабильный запуск (переживает рестарт процессов и сервера):
+
+- туннель — как systemd-сервис: `clo service install && clo service start`
+  (юнит `cloudpub.service`, `Restart=on-failure`, автозапуск при загрузке;
+  поддомен на cloudpub.ru постоянный — адрес переживает переподключения);
+- бот — через docker compose (`restart: unless-stopped`), см. раздел 4 выше;
+  с заполненными `MAX_MODE=webhook`/`WEBHOOK_*` в `.env` контейнер поднимается
+  в webhook-режиме, порт пробрасывается на `127.0.0.1` хоста для туннеля.
 
 Вариант со своим сервером и доменом: сервис `bot` в docker-compose пробрасывает
 `${WEBHOOK_PORT}` на `127.0.0.1` хоста — достаточно направить на него nginx:

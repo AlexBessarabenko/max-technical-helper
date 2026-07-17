@@ -178,11 +178,23 @@ services:
   bot:
     build: .
     restart: unless-stopped
-    env_file: .env
     environment:
+      # Переменные подставляются из shell (set -a && . ./.env) — env_file не
+      # используется, т.к. snap-сборка docker не читает файлы вне разрешённых путей.
+      YANDEX_API_KEY: ${YANDEX_API_KEY:-}
+      YANDEX_FOLDER_ID: ${YANDEX_FOLDER_ID:-}
+      YANDEX_LLM_MODEL: ${YANDEX_LLM_MODEL:-deepseek-v4-flash}
+      MAX_BOT_TOKEN: ${MAX_BOT_TOKEN:-}
+      MAX_MODE: ${MAX_MODE:-polling}
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+      WEBHOOK_PATH: ${WEBHOOK_PATH:-/webhook/max}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      WEBHOOK_HOST: 0.0.0.0
+      WEBHOOK_PORT: ${WEBHOOK_PORT:-8080}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_BASE_URL: http://langfuse-web:3000
       CHROMA_DIR: /data/chroma_db
-      WEBHOOK_HOST: 0.0.0.0
     ports:
       # webhook-режим: nginx хоста проксирует сюда обновления от MAX
       - 127.0.0.1:${WEBHOOK_PORT:-8080}:${WEBHOOK_PORT:-8080}
