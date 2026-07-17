@@ -13,10 +13,13 @@ from maxapi import Bot, Dispatcher, F
 from maxapi.enums.parse_mode import TextFormat
 from maxapi.enums.sender_action import SenderAction
 from maxapi.filters.command import CommandStart
+from maxapi.filters.filter import BaseFilter
 from maxapi.types import BotStarted, MessageCreated
+from maxapi.types.attachments.audio import Audio
 
 from src.bot.assistant import Assistant
 from src.bot.formatting import to_max_markdown
+from src.bot.speech import transcribe
 from src.config import Settings, get_settings
 from src.observability.tracing import init_langfuse
 from src.rag.chain import RAGPipeline
@@ -27,13 +30,26 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 WELCOME = ("Здравствуйте! Я внутренний ассистент «ТехноСферы». Отвечу на вопросы по IT и HR "
-           "(VPN, отпуск, ДМС, доступы…) и помогу найти коллегу. Просто напишите вопрос.")
+           "(VPN, отпуск, ДМС, доступы…) и помогу найти коллегу. Просто напишите вопрос — "
+           "можно также отправить голосовое сообщение.")
+
+VOICE_FAIL_TEXT = "Не удалось распознать речь, попробуйте ещё раз или напишите текстом."
 
 # Max ограничивает длину сообщения ~4000 символов — отвечаем с запасом.
 _MAX_MESSAGE_LEN = 3900
 
 # Индикатор «печатает…» в Max гаснет через несколько секунд — обновляем.
 _TYPING_INTERVAL_SEC = 4.0
+
+
+class _AudioAttachmentFilter(BaseFilter):
+    """Пропускает сообщения с аудио-вложением (голосовые)."""
+
+    async def __call__(self, event: MessageCreated) -> bool:
+        body = event.message.body
+        return bool(body) and any(
+            isinstance(a, Audio) for a in (body.attachments or [])
+        )
 
 
 async def _typing_loop(bot: Bot, chat_id: int) -> None:
@@ -60,6 +76,46 @@ def build_dispatcher(bot: Bot, assistant: Assistant) -> Dispatcher:
     @dp.message_created(CommandStart())
     async def on_start(event: MessageCreated):
         await event.message.answer(WELCOME)
+
+    @dp.message_created(_AudioAttachmentFilter())
+    async def on_voice(event: MessageCreated):
+        """Голосовое: скачать аудио → SpeechKit STT → обычный ответ ассистента.
+
+        Распознанный текст идёт в assistant.reply как обычная user-реплика
+        (история диалога ведётся внутри Assistant).
+        """
+        message = event.message
+        user_id = str(message.sender.user_id)
+        audio = next(
+            a for a in message.body.attachments if isinstance(a, Audio)
+        )
+        url = getattr(audio.payload, "url", None)
+        if not url:
+            log.warning("Голосовое без url для скачивания (user_id=%s)", user_id)
+            await message.answer(VOICE_FAIL_TEXT)
+            return
+
+        typing = asyncio.create_task(_typing_loop(bot, message.recipient.chat_id))
+        try:
+            try:
+                audio_bytes = await bot.download_bytes(url)
+            except Exception:
+                log.exception("Не удалось скачать голосовое (user_id=%s)", user_id)
+                await message.answer(VOICE_FAIL_TEXT)
+                return
+            text = await asyncio.to_thread(transcribe, audio_bytes, assistant.settings)
+            if text is None:
+                await message.answer(VOICE_FAIL_TEXT)
+                return
+            answer = await asyncio.to_thread(assistant.reply, user_id, text)
+        finally:
+            typing.cancel()
+
+        reply = f"Вы спросили: *{text}*\n\n{answer}"
+        await message.answer(
+            to_max_markdown(reply[:_MAX_MESSAGE_LEN]),
+            format=TextFormat.MARKDOWN,
+        )
 
     @dp.message_created(F.message.body.text)
     async def on_message(event: MessageCreated):
