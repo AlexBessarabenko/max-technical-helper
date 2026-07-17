@@ -10,11 +10,13 @@ import logging
 
 import chromadb
 from maxapi import Bot, Dispatcher, F
+from maxapi.enums.parse_mode import TextFormat
 from maxapi.enums.sender_action import SenderAction
 from maxapi.filters.command import CommandStart
 from maxapi.types import BotStarted, MessageCreated
 
 from src.bot.assistant import Assistant
+from src.bot.formatting import to_max_markdown
 from src.config import Settings, get_settings
 from src.observability.tracing import init_langfuse
 from src.rag.chain import RAGPipeline
@@ -68,7 +70,10 @@ def build_dispatcher(bot: Bot, assistant: Assistant) -> Dispatcher:
             answer = await asyncio.to_thread(assistant.reply, user_id, event.message.body.text)
         finally:
             typing.cancel()
-        await event.message.answer(answer[:_MAX_MESSAGE_LEN])
+        await event.message.answer(
+            to_max_markdown(answer[:_MAX_MESSAGE_LEN]),
+            format=TextFormat.MARKDOWN,
+        )
 
     return dp
 
