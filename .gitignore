@@ -6,3 +6,5 @@ __pycache__/
 .venv/
 docs/superpowers/
 presentation/
+reports/compare_log.txt
+reports/lora_smoke_log.txt
