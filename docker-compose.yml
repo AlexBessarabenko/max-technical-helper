@@ -182,6 +182,10 @@ services:
     environment:
       LANGFUSE_BASE_URL: http://langfuse-web:3000
       CHROMA_DIR: /data/chroma_db
+      WEBHOOK_HOST: 0.0.0.0
+    ports:
+      # webhook-режим: nginx хоста проксирует сюда обновления от MAX
+      - 127.0.0.1:${WEBHOOK_PORT:-8080}:${WEBHOOK_PORT:-8080}
     volumes:
       - bot_data:/data
     depends_on:

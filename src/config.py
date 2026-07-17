@@ -13,6 +13,15 @@ class Settings(BaseSettings):
     yandex_base_url: str = "https://ai.api.cloud.yandex.net/v1"
 
     max_bot_token: str = ""
+    # Режим получения обновлений MAX: "polling" (dev) или "webhook" (prod).
+    max_mode: str = "polling"
+    # Публичный базовый URL, до которого достучится платформа MAX (https, 443).
+    webhook_url: str = ""
+    webhook_path: str = "/webhook/max"
+    # Секрет для проверки заголовка X-Max-Bot-Api-Secret (A-Za-z0-9_-, 5..256).
+    webhook_secret: str = ""
+    webhook_host: str = "0.0.0.0"
+    webhook_port: int = 8080
 
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""

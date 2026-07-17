@@ -1,6 +1,8 @@
-"""Точка входа Max-бота: long-polling через maxapi.
+"""Точка входа Max-бота: long-polling (dev) или webhook (prod) через maxapi.
 
 Запуск: `.venv/bin/python -m src.bot.max_bot` (нужен MAX_BOT_TOKEN в .env).
+Режим задаётся MAX_MODE: polling — delete_webhook + start_polling;
+webhook — subscribe_webhook + aiohttp-сервер (нужны WEBHOOK_URL/SECRET).
 Хендлеры асинхронные, но RAG/LLM-вызов синхронный — он уносится в thread
 через asyncio.to_thread, чтобы не блокировать event loop.
 """
@@ -12,10 +14,13 @@ import chromadb
 from maxapi import Bot, Dispatcher, F
 from maxapi.enums.parse_mode import TextFormat
 from maxapi.enums.sender_action import SenderAction
+from maxapi.enums.update import UpdateType
 from maxapi.filters.command import CommandStart
 from maxapi.filters.filter import BaseFilter
+from maxapi.methods.types import getted_updates
 from maxapi.types import BotStarted, MessageCreated
 from maxapi.types.attachments.audio import Audio
+from maxapi.webhook.aiohttp import AiohttpMaxWebhook
 
 from src.bot.assistant import Assistant
 from src.bot.formatting import to_max_markdown
@@ -40,6 +45,31 @@ _MAX_MESSAGE_LEN = 3900
 
 # Индикатор «печатает…» в Max гаснет через несколько секунд — обновляем.
 _TYPING_INTERVAL_SEC = 4.0
+
+# Известный баг платформы MAX: для новых ботов нативные голосовые приходят
+# как message_created без тела (max-bot-api-client-ts#250). maxapi молча
+# дропает такие обновления; ответить на них нельзя (нет chat_id) — но хотя
+# бы логируем понятным сообщением вместо «неизвестный тип обновления».
+_original_get_update_model = getted_updates.get_update_model
+
+
+async def _get_update_model_logging(event: dict, bot: Bot):
+    model = await _original_get_update_model(event, bot)
+    if (
+        model is None
+        and event.get("update_type") == "message_created"
+        and "message" not in event
+    ):
+        log.warning(
+            "MAX прислал message_created без тела — вероятно, нативное "
+            "голосовое (баг платформы max-bot-api-client-ts#250). "
+            "Ответить невозможно: в обновлении нет chat_id."
+        )
+    return model
+
+
+def _patch_voice_stub_logging() -> None:
+    getted_updates.get_update_model = _get_update_model_logging
 
 
 class _AudioAttachmentFilter(BaseFilter):
@@ -154,6 +184,32 @@ def ensure_index(settings: Settings) -> None:
     log.info("Индекс собран: %d чанков.", n)
 
 
+async def run_webhook(settings: Settings, bot: Bot, dp: Dispatcher) -> None:
+    """Prod-режим: подписка на webhook и приём обновлений по HTTPS.
+
+    MAX шлёт обновления POST-ом на {webhook_url}{webhook_path}; внешний
+    nginx на 443 проксирует их на webhook_host:webhook_port. Секрет
+    проверяется библиотекой по заголовку X-Max-Bot-Api-Secret.
+    """
+    if not settings.webhook_url:
+        raise RuntimeError("MAX_MODE=webhook требует WEBHOOK_URL в .env")
+    url = settings.webhook_url.rstrip("/") + settings.webhook_path
+    await bot.subscribe_webhook(
+        url=url,
+        update_types=[UpdateType.MESSAGE_CREATED, UpdateType.BOT_STARTED],
+        secret=settings.webhook_secret or None,
+    )
+    log.info("Webhook-подписка оформлена на %s", url)
+    webhook = AiohttpMaxWebhook(
+        dp=dp, bot=bot, secret=settings.webhook_secret or None
+    )
+    await webhook.run(
+        host=settings.webhook_host,
+        port=settings.webhook_port,
+        path=settings.webhook_path,
+    )
+
+
 async def main():
     settings = get_settings()
     ensure_index(settings)
@@ -161,9 +217,14 @@ async def main():
     rag = RAGPipeline(settings, lf=lf)
     assistant = Assistant(settings, rag, PeopleDirectory(settings.ad_path), lf)
     bot = Bot(token=settings.max_bot_token)
+    dp = build_dispatcher(bot, assistant)
+    _patch_voice_stub_logging()
+    if settings.max_mode == "webhook":
+        await run_webhook(settings, bot, dp)
+        return
     await bot.delete_webhook()  # гарантируем polling
     log.info("Запускаю long-polling…")
-    await build_dispatcher(bot, assistant).start_polling(bot)
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":

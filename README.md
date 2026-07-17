@@ -58,15 +58,24 @@
 - индикатор «печатает…», пока ассистент готовит ответ (LLM может думать десятки секунд);
 - ответы в Markdown (`format=markdown`): разметка LLM санитизируется под диалект
   MAX (`src/bot/formatting.py`) — заголовки → жирный текст, `---` убираются;
+- поиск коллег по справочнику сотрудников (`src/rag/people.py`, rapidfuzz, без LLM):
+  по ФИО с учётом склонений и опечаток («найди Николаеву») и по должности
+  («кто генеральный директор?»); при неоднозначности бот предлагает варианты
+  списком и понимает короткий follow-up («Степанов» после списка кандидатов);
 - голосовые сообщения распознаются через Yandex SpeechKit STT (`src/bot/speech.py`),
   распознанный текст обрабатывается как обычный вопрос (с историей диалога).
+  Известный баг платформы: в long-polling нативные голосовые для новых ботов
+  приходят как `message_created` без тела и недоступны в `GET /messages`
+  ([max-bot-api-client-ts#250](https://github.com/max-messenger/max-bot-api-client-ts/issues/250)).
+  В webhook-режиме голосовые доставляются полностью (проверено) — поэтому он
+  и является рабочим режимом для голосового ввода; пустые обновления логируются.
 
 ## Стек
 
 | Слой | Технология |
 |---|---|
 | Язык / рантайм | Python 3.12 |
-| Бот | maxapi (long-polling), asyncio |
+| Бот | maxapi (long-polling / webhook), asyncio |
 | LLM | YandexGPT `deepseek-v4-flash` через OpenAI-совместимый API |
 | Embeddings | Yandex `text-search-doc` / `text-search-query` |
 | Векторная БД | ChromaDB (persist на диске, cosine) |
@@ -139,6 +148,9 @@ cp .env.example .env   # заполнить значения
 | `YANDEX_FOLDER_ID` | да | ID каталога Yandex Cloud |
 | `YANDEX_LLM_MODEL` | нет | Модель YandexGPT (по умолчанию `deepseek-v4-flash`) |
 | `MAX_BOT_TOKEN` | да (для бота) | Токен бота Max |
+| `MAX_MODE` | нет | `polling` (по умолчанию) или `webhook` — см. «Webhook-режим» ниже |
+| `WEBHOOK_URL` | для webhook | Публичный HTTPS-адрес без пути, например `https://example.ru` |
+| `WEBHOOK_SECRET` | для webhook | Секрет проверки заголовка `X-Max-Bot-Api-Secret` |
 | `LANGFUSE_PUBLIC_KEY` | нет | Публичный ключ проекта Langfuse (без ключей трейсинг молча отключается) |
 | `LANGFUSE_SECRET_KEY` | нет | Секретный ключ проекта Langfuse |
 | `LANGFUSE_BASE_URL` | нет | Адрес Langfuse (по умолчанию `http://localhost:3000`) |
@@ -179,6 +191,51 @@ set -a && . ./.env && set +a && docker compose -f - up -d --build < docker-compo
 
 После старта: Langfuse UI — http://localhost:3000 (логин/пароль задаются
 переменными `LANGFUSE_INIT_USER_*` в `.env`), бот отвечает в Max.
+
+### 5. Webhook-режим (production)
+
+По умолчанию бот получает обновления через long-polling (`MAX_MODE=polling`) —
+для разработки этого достаточно, но MAX рекомендует webhook для production:
+polling ограничен по скорости и сроку хранения событий. Кроме того, в polling
+у новых ботов нативные голосовые приходят пустыми (см. «Особенности диалога»
+выше), а через webhook доставляются полностью — голосовой ввод требует webhook.
+
+Боту нужен публичный HTTPS-адрес на 443 порту с доверенным сертификатом.
+Проверенный вариант без своего домена — туннель [CloudPub](https://cloudpub.ru)
+(ngrok из РФ недоступен: блокирует подключения с российских IP):
+
+```bash
+# утилита clo — https://cloudpub.ru/download
+clo set token <API-ключ из личного кабинета CloudPub>
+clo publish http 8080
+# Сервис опубликован: http://localhost:8080 -> https://<имя>.cloudpub.ru:443
+```
+
+Полученный адрес вносим в `.env` и запускаем бота:
+
+```bash
+MAX_MODE=webhook
+WEBHOOK_URL=https://<имя>.cloudpub.ru  # публичный базовый URL, без пути
+WEBHOOK_PATH=/webhook/max              # опционально, значение по умолчанию
+WEBHOOK_SECRET=<случайная строка>      # проверка X-Max-Bot-Api-Secret
+WEBHOOK_PORT=8080                      # порт aiohttp-сервера
+```
+
+При старте бот сам оформляет подписку (`POST /subscriptions`) на
+`{WEBHOOK_URL}{WEBHOOK_PATH}` и поднимает aiohttp-сервер на `127.0.0.1:8080`;
+туннель проксирует на него публичный 443-й порт (сертификат GlobalSign проходит
+TLS-проверку MAX).
+
+Вариант со своим сервером и доменом: сервис `bot` в docker-compose пробрасывает
+`${WEBHOOK_PORT}` на `127.0.0.1` хоста — достаточно направить на него nginx:
+
+```nginx
+location /webhook/max {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+```
 
 ## Тесты и качество
 
@@ -324,20 +381,3 @@ NDA-контента:
   синтетическим статьям.
 
 Домены `*.technosphere.example`, телефоны и email — вымышленные.
-
-## Презентация
-
-Черновик презентации защиты собирается скриптом (каталог `presentation/` в
-gitignore, в репозиторий не попадает):
-
-```bash
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python presentation/build_presentation.py
-# результат: presentation/max-technical-helper.pptx
-```
-
-Скрипт использует шаблон OTUS, подставляет Ragas-метрики из
-`tests/ragas_results.json`, таблицу Base vs FT из `reports/finetune_report.md`
-и скриншоты из `reports/screenshots/`.
-
-![Ragas-отчёт](reports/screenshots/ragas_report.png)
