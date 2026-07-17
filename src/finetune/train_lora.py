@@ -1,4 +1,7 @@
-"""LoRA fine-tuning of Qwen2.5-Instruct on the corporate SFT dataset (CPU-only).
+"""LoRA fine-tuning of Qwen2.5-Instruct on the corporate SFT dataset.
+
+Runs on CPU by default (this server has no GPU); set FINETUNE_USE_CPU=0 on a
+GPU machine to train on CUDA (combine with FINETUNE_DTYPE=bfloat16).
 
 Usage:
     .venv/bin/python -m src.finetune.train_lora
@@ -10,6 +13,8 @@ Env overrides:
     FINETUNE_OUTPUT_DIR   — adapter output dir (default: models/lora_adapter)
     FINETUNE_DTYPE        — float32 | bfloat16 | auto (default: auto — fp32 only
                             when >=12 GB RAM is available, else bfloat16)
+    FINETUNE_USE_CPU      — 1 (default) forces CPU via TrainingArguments.use_cpu;
+                            0 lets the Trainer pick CUDA (GPU machines)
 """
 
 import os
@@ -76,9 +81,10 @@ def main() -> None:
     max_examples = int(os.environ.get("FINETUNE_MAX_EXAMPLES", "0")) or None
     epochs = float(os.environ.get("FINETUNE_EPOCHS", "2"))
     output_dir = os.environ.get("FINETUNE_OUTPUT_DIR", "models/lora_adapter")
+    use_cpu = os.environ.get("FINETUNE_USE_CPU", "1") != "0"
     dtype = _resolve_dtype()
 
-    print(f"Base model: {base_model} | dtype: {dtype} | output: {output_dir}")
+    print(f"Base model: {base_model} | dtype: {dtype} | use_cpu: {use_cpu} | output: {output_dir}")
 
     tokenizer = AutoTokenizer.from_pretrained(base_model)
     dataset = _prepare_dataset(str(settings.finetune_dataset_path), tokenizer, max_examples)
@@ -107,7 +113,7 @@ def main() -> None:
             num_train_epochs=epochs,
             learning_rate=1e-4,
             logging_steps=5,
-            use_cpu=True,
+            use_cpu=use_cpu,
             report_to=[],
             save_strategy="no",
             dataloader_num_workers=0,
