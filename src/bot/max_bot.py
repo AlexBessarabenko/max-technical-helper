@@ -10,6 +10,7 @@ import logging
 
 import chromadb
 from maxapi import Bot, Dispatcher, F
+from maxapi.enums.sender_action import SenderAction
 from maxapi.filters.command import CommandStart
 from maxapi.types import BotStarted, MessageCreated
 
@@ -29,6 +30,23 @@ WELCOME = ("Здравствуйте! Я внутренний ассистент
 # Max ограничивает длину сообщения ~4000 символов — отвечаем с запасом.
 _MAX_MESSAGE_LEN = 3900
 
+# Индикатор «печатает…» в Max гаснет через несколько секунд — обновляем.
+_TYPING_INTERVAL_SEC = 4.0
+
+
+async def _typing_loop(bot: Bot, chat_id: int) -> None:
+    """
+    Шлёт TYPING_ON, пока задачу не отменят (cancel после получения ответа).
+    Ошибка отправки не роняет цикл — индикатор best-effort, просто выходим.
+    """
+    while True:
+        try:
+            await bot.send_action(chat_id=chat_id, action=SenderAction.TYPING_ON)
+        except Exception:
+            log.exception("Не удалось отправить typing-индикатор (chat_id=%s)", chat_id)
+            return
+        await asyncio.sleep(_TYPING_INTERVAL_SEC)
+
 
 def build_dispatcher(bot: Bot, assistant: Assistant) -> Dispatcher:
     dp = Dispatcher()
@@ -44,7 +62,12 @@ def build_dispatcher(bot: Bot, assistant: Assistant) -> Dispatcher:
     @dp.message_created(F.message.body.text)
     async def on_message(event: MessageCreated):
         user_id = str(event.message.sender.user_id)
-        answer = await asyncio.to_thread(assistant.reply, user_id, event.message.body.text)
+        # LLM может думать 30+ секунд — показываем «печатает…», пока ждём.
+        typing = asyncio.create_task(_typing_loop(bot, event.message.recipient.chat_id))
+        try:
+            answer = await asyncio.to_thread(assistant.reply, user_id, event.message.body.text)
+        finally:
+            typing.cancel()
         await event.message.answer(answer[:_MAX_MESSAGE_LEN])
 
     return dp
