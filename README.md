@@ -237,9 +237,11 @@ batch 1 × grad accumulation 8, dtype bfloat16.
 (smoke-прогоны), `FINETUNE_EPOCHS`, `FINETUNE_OUTPUT_DIR`, `FINETUNE_DTYPE`
 (float32 | bfloat16 | auto), `FINETUNE_USE_CPU` (1 | 0).
 
-> **Результаты Base vs Fine-Tuned.** Обучение выполняется; сравнительная
-> таблица появится в `reports/finetune_report.md` после завершения обучения
-> и прогона сравнения. Секция будет дополнена.
+> **Результаты Base vs Fine-Tuned** (подробно — `reports/finetune_report.md`):
+> обучение LoRA на 198 парах (train_loss 2.224 → 0.952); доля ответов,
+> начинающихся с корпоративного приветствия, — 8% → **100%**; оценка
+> соответствия корпоративному стилю (LLM-as-judge, 1–5) — 3.5 → **4.75**.
+> Вывод: LoRA переняла Tone of Voice, фактологию обеспечивает RAG-контур.
 
 ### Как переключить на Qwen2.5-7B на GPU
 
@@ -298,8 +300,6 @@ Ragas-метрики к трейсам как scores. UI: Datasets → corporate
 - **Вне базы знаний:** «Как приготовить борщ?» — бот обязан вежливо отказаться
   и указать контакт поддержки, а не выдумывать ответ.
 
-![Демо бота](reports/screenshots/bot_demo.png)
-
 ## Данные — 100% синтетика
 
 Все данные проекта сгенерированы и не содержат персональных данных и
@@ -330,6 +330,6 @@ gitignore, в репозиторий не попадает):
 
 Скрипт использует шаблон OTUS, подставляет Ragas-метрики из
 `tests/ragas_results.json`, таблицу Base vs FT из `reports/finetune_report.md`
-(когда появится) и скриншоты из `reports/screenshots/` (когда появятся).
+и скриншоты из `reports/screenshots/`.
 
 ![Ragas-отчёт](reports/screenshots/ragas_report.png)
