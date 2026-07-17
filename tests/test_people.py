@@ -62,3 +62,75 @@ def test_lookup_manager_of_ceo_has_no_manager_card():
     ans = d.lookup_answer("кто руководитель Козлова?")
     assert ans is not None and "Вениамин Козлов" in ans
     assert "Руководитель:" not in ans  # manager_id=None — карточка руководителя не добавляется
+
+
+_STEPANOV_FIXTURE = [
+    {"id": 18, "full_name": "Клавдий Степанов", "department": "Продажи",
+     "division": "Продажи", "position": "Руководитель отдела «Розничные продажи»",
+     "phone": "3018", "email": "klavdiy.stepanov@technosphere.example",
+     "manager_id": None, "samaccountname": "k.stepanov"},
+    {"id": 38, "full_name": "Клавдий Панов", "department": "Маркетинг",
+     "division": "Маркетинг", "position": "PR-менеджер", "phone": "3038",
+     "email": "klavdiy.panov@technosphere.example",
+     "manager_id": None, "samaccountname": "k.panov"},
+    {"id": 69, "full_name": "Венедикт Степанов", "department": "Финансы",
+     "division": "Финансы", "position": "Финансовый аналитик", "phone": "3069",
+     "email": "venedikt.stepanov@technosphere.example",
+     "manager_id": None, "samaccountname": "v.stepanov"},
+    {"id": 91, "full_name": "Евпраксия Степанова", "department": "Продажи",
+     "division": "Продажи", "position": "Менеджер по работе с клиентами",
+     "phone": "3091", "email": "evpraksiya.stepanova@technosphere.example",
+     "manager_id": None, "samaccountname": "e.stepanova"},
+]
+
+
+def test_full_name_beats_weak_fuzzy_hit():
+    # Регрессия: «степанов» нечётко совпадает с «панов» (77) и раньше давало
+    # Клавдию Панову лишнее «совпавшее слово» → ложное уточнение на полное ФИО.
+    d = PeopleDirectory.__new__(PeopleDirectory, employees=_STEPANOV_FIXTURE)
+    ans = d.lookup_answer("Клавдий степанов")
+    assert ans is not None and "Клавдий Степанов" in ans
+    assert "Уточните" not in ans
+
+
+def test_clarification_options_and_follow_up():
+    d = PeopleDirectory.__new__(PeopleDirectory, employees=_STEPANOV_FIXTURE)
+    options = d.clarification_options("Кто такой клавдий")
+    assert options is not None and len(options) == 2
+    # Follow-up «Степанов» решается в пользу Клавдия Степанова из списка.
+    ans = d.lookup_within(options, "Степанов")
+    assert ans is not None and "Клавдий Степанов" in ans
+
+
+def test_lookup_by_position_ceo():
+    d = PeopleDirectory.__new__(PeopleDirectory, employees=[
+        {"id": "c1", "full_name": "Вениамин Козлов", "department": "ТехноСфера",
+         "division": "Дирекция", "position": "Генеральный директор", "phone": "2000",
+         "email": "veniamin.kozlov@technosphere.example", "manager_id": None,
+         "samaccountname": "v.kozlov"},
+        {"id": "e2", "full_name": "Ирина Николаева", "department": "ИТ",
+         "division": "Руководство", "position": "Руководитель департамента «ИТ»",
+         "phone": "1671", "email": "irina.nikolaeva@technosphere.example",
+         "manager_id": "c1", "samaccountname": "i.nikolaeva"},
+    ])
+    ans = d.lookup_answer("Кто генеральный директор ТехноСферы?")
+    assert ans is not None and "Вениамин Козлов" in ans and "Генеральный директор" in ans
+
+
+def test_lookup_position_ambiguous_returns_none():
+    # Популярная должность у многих сотрудников — неоднозначно, отвечает RAG.
+    d = PeopleDirectory.__new__(PeopleDirectory, employees=[
+        {"id": f"r{i}", "full_name": f"Сотрудник{i} Иванов", "department": "HR",
+         "division": "HR", "position": "Рекрутер", "phone": str(4000 + i),
+         "email": f"r{i}@technosphere.example", "manager_id": None,
+         "samaccountname": f"r{i}"}
+        for i in range(3)
+    ])
+    assert d.lookup_answer("кто рекрутер?") is None
+
+
+def test_real_data_ceo_question():
+    # Золотой сценарий из goldens.json на реальном employees.json.
+    d = PeopleDirectory("data/ad/employees.json")
+    ans = d.lookup_answer("Кто генеральный директор ТехноСферы?")
+    assert ans is not None and "Вениамин Козлов" in ans
