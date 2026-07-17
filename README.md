@@ -87,7 +87,7 @@ max-technical-helper/
 │   ├── bot/
 │   │   ├── max_bot.py          # точка входа бота Max (long-polling)
 │   │   ├── assistant.py        # роутер: справочник сотрудников → RAG
-│   │   └── session.py          # сессионная память (последние 6 реплик, TTL)
+│   │   └── session.py          # сессионная память (последние 6 реплик, deque)
 │   ├── observability/
 │   │   └── tracing.py          # Langfuse-клиент + fail-safe обёртки над SDK
 │   ├── eval/
