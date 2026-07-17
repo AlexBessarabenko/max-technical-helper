@@ -36,5 +36,11 @@ def transcribe(audio_bytes: bytes, settings) -> str | None:
     if resp.status_code != 200:
         log.warning("SpeechKit STT ответил %s: %s", resp.status_code, resp.text[:500])
         return None
+    # Ответ 200 не гарантирует валидный JSON — разбор тоже под защитой.
+    try:
+        result = resp.json().get("result")
+    except Exception:
+        log.warning("SpeechKit STT: не удалось разобрать тело ответа")
+        return None
     # Пустой result (тишина, неразборчивая речь) — тоже «не распознали».
-    return resp.json().get("result") or None
+    return result or None

@@ -51,6 +51,15 @@ def test_transcribe_api_error_returns_none(mock_post):
 
 
 @patch("src.bot.speech.requests.post")
+def test_transcribe_invalid_json_returns_none(mock_post):
+    # 200 с битым телом (не JSON) — распознавание считается неудачным.
+    resp = MagicMock(status_code=200)
+    resp.json.side_effect = ValueError("Expecting value: line 1 column 1")
+    mock_post.return_value = resp
+    assert transcribe(b"ogg-bytes", _settings()) is None
+
+
+@patch("src.bot.speech.requests.post")
 def test_transcribe_network_error_returns_none(mock_post):
     mock_post.side_effect = OSError("connection refused")
     assert transcribe(b"ogg-bytes", _settings()) is None
